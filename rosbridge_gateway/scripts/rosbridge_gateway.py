@@ -34,6 +34,7 @@
 
 import sys
 import time
+from email import message
 
 import rclpy
 import roslibpy
@@ -131,19 +132,58 @@ class RosbridgeGatewayNode(Node):
         connected = False
         while not connected and self.context.ok():
             try:
-                local = roslibpy.Ros(host=local_address, port=local_port)
-                remote = roslibpy.Ros(host=remote_address, port=remote_port)
-                local.run()
-                remote.run()
-                self.get_logger().info(
-                    f"Rosbridge Gateway is connected to remote server {remote_address}:{remote_port} and to local server {local_address}:{local_port}"
-                )
-                connected = True
+                self.local = roslibpy.Ros(host=local_address, port=local_port)
+                self.remote = roslibpy.Ros(host=remote_address, port=remote_port)
+                self.local.run()
+                self.remote.run()
             except OSError as e:
                 self.get_logger().warn(
                     "Unable to start Gateway: {} " "Retrying in {}s.".format(e, retry_startup_delay)
                 )
                 time.sleep(retry_startup_delay)
+            else:
+                self.get_logger().info(
+                    f"Rosbridge Gateway is connected to remote server {remote_address}:{remote_port} and to local server {local_address}:{local_port}"
+                )
+                connected = True
+
+        self.bridge_topics = [
+            "/client_count",
+            "/connected_clients",
+            "/parameter_events",
+            "/rosout",
+        ]
+        self.local_topics = []
+        self.remote_topics = []
+
+        # self.create_timer(1, self.topic_advertise_to_local)
+        self.create_timer(1, self.topic_advertise_to_remote)
+
+    def topic_advertise_to_local(self):
+        for topic in roslibpy.Ros.get_topics(self.remote, callback=None):
+            if topic not in self.bridge_topics and topic not in self.remote_topics:
+                self.get_logger().info(f"advertise {topic} to local")
+                roslibpy.Topic(
+                    self.local, topic, roslibpy.Ros.get_topic_type(self.remote, topic)
+                ).advertise()
+                self.remote_topics.append(topic)
+
+    def topic_advertise_to_remote(self):
+        for topic in roslibpy.Ros.get_topics(self.local, callback=None):
+            if topic not in self.bridge_topics:
+                type = roslibpy.Ros.get_topic_type(self.local, topic)
+                remote = roslibpy.Topic(self.remote, topic, type)
+                local = roslibpy.Topic(self.local, topic, type)
+                if remote.is_subscribed:
+                    self.get_logger().info(f"subscribe {topic} on remote")
+                    local.subscribe(remote.publish)
+                else:
+                    local.unsubscribe()
+                if topic not in self.remote_topics:
+                    if not remote.is_advertised:
+                        self.get_logger().info(f"advertise {topic} to remote")
+                        remote.advertise()
+                    self.remote_topics.append(topic)
 
 
 def main(args=None):
@@ -153,7 +193,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = RosbridgeGatewayNode()
 
-    spin_callback = PeriodicCallback(lambda: rclpy.spin_once(node, timeout_sec=0.01), 1)
+    spin_callback = PeriodicCallback(lambda: rclpy.spin_once(node, timeout_sec=0.01), 1000)
     spin_callback.start()
     try:
         start_hook()
