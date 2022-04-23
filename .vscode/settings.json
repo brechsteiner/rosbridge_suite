@@ -14,4 +14,8 @@
         "--skip",
         "B101,B110,B311"
     ],
+    "python.analysis.extraPaths": [
+        "./rosbridge_library/src",
+        "./rosbridge_server/src"
+    ],
 }

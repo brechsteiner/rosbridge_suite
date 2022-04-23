@@ -1,0 +1,9 @@
+<launch>
+  <arg name="remote_port" default="9090" />
+  <arg name="remote_address" default="" />
+  <arg name="local_port" default="9090" />
+  <arg name="local_address" default="localhost" />
+
+  <arg name="retry_startup_delay" default="5.0" />
+
+</launch>
