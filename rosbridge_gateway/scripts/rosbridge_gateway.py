@@ -34,7 +34,6 @@
 
 import sys
 import time
-from email import message
 
 import rclpy
 import roslibpy
@@ -147,43 +146,71 @@ class RosbridgeGatewayNode(Node):
                 )
                 connected = True
 
-        self.bridge_topics = [
+        self.deny_topics = [
             "/client_count",
             "/connected_clients",
             "/parameter_events",
             "/rosout",
         ]
+        self.advertised_topics = []
         self.local_topics = []
         self.remote_topics = []
 
-        # self.create_timer(1, self.topic_advertise_to_local)
-        self.create_timer(1, self.topic_advertise_to_remote)
+        self.create_timer(1, self.update_topic_list)
+        self.create_timer(1, self.advertise_to_remote)
+        self.create_timer(1, self.advertise_to_local)
+        self.create_timer(1, self.test)
 
-    def topic_advertise_to_local(self):
-        for topic in roslibpy.Ros.get_topics(self.remote, callback=None):
-            if topic not in self.bridge_topics and topic not in self.remote_topics:
-                self.get_logger().info(f"advertise {topic} to local")
-                roslibpy.Topic(
-                    self.local, topic, roslibpy.Ros.get_topic_type(self.remote, topic)
-                ).advertise()
-                self.remote_topics.append(topic)
+    def update_topic_list(self):
+        local_list = list(
+            set(roslibpy.Ros.get_topics(self.local, callback=None))
+            - set(self.advertised_topics)
+            - set(self.deny_topics)
+        )
+        for topic in local_list:
+            if not any(x.name == topic for x in self.local_topics):
+                self.get_logger().info(f"add local topic {topic} to list")
+                self.local_topics.append(
+                    roslibpy.Topic(
+                        self.local, topic, roslibpy.Ros.get_topic_type(self.local, topic)
+                    )
+                )
+        remote_list = list(
+            set(roslibpy.Ros.get_topics(self.remote, callback=None))
+            - set(self.advertised_topics)
+            - set(self.deny_topics)
+        )
+        for topic in remote_list:
+            if not any(x.name == topic for x in self.remote_topics):
+                self.get_logger().info(f"add remote topic {topic} to list")
+                self.remote_topics.append(
+                    roslibpy.Topic(
+                        self.remote, topic, roslibpy.Ros.get_topic_type(self.remote, topic)
+                    )
+                )
 
-    def topic_advertise_to_remote(self):
-        for topic in roslibpy.Ros.get_topics(self.local, callback=None):
-            if topic not in self.bridge_topics:
-                type = roslibpy.Ros.get_topic_type(self.local, topic)
-                remote = roslibpy.Topic(self.remote, topic, type)
-                local = roslibpy.Topic(self.local, topic, type)
-                if remote.is_subscribed:
-                    self.get_logger().info(f"subscribe {topic} on remote")
-                    local.subscribe(remote.publish)
-                else:
-                    local.unsubscribe()
-                if topic not in self.remote_topics:
-                    if not remote.is_advertised:
-                        self.get_logger().info(f"advertise {topic} to remote")
-                        remote.advertise()
-                    self.remote_topics.append(topic)
+    def test(self):
+        for topic in self.local_topics:
+            if topic.is_subscribed:
+                self.get_logger().info(f"topic {topic.name} is subscribed")
+
+    def advertise_to_remote(self):
+        for topic in self.local_topics:
+            if not topic.is_subscribed:
+                self.get_logger().info(f"advertise {topic.name} to remote")
+                self.advertised_topics.append(topic.name)
+                remote = roslibpy.Topic(self.remote, topic.name, topic.message_type)
+                remote.advertise()
+                topic.subscribe(lambda msg: remote.publish(msg))
+
+    def advertise_to_local(self):
+        for topic in self.remote_topics:
+            if not topic.is_subscribed:
+                self.get_logger().info(f"advertise {topic.name} to local")
+                self.advertised_topics.append(topic.name)
+                local = roslibpy.Topic(self.local, topic.name, topic.message_type)
+                local.advertise()
+                topic.subscribe(lambda msg: local.publish(msg))
 
 
 def main(args=None):
