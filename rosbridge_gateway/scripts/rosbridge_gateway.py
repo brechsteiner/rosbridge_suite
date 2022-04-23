@@ -32,6 +32,7 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 
+import json
 import sys
 import time
 
@@ -152,22 +153,37 @@ class RosbridgeGatewayNode(Node):
             "/parameter_events",
             "/rosout",
         ]
+        self.deny_hosts = [
+            "/rosapi",
+            "/rosapi_params",
+            "/rosbridge_websocket",
+            "/rosbridge_gateway",
+        ]
+        # String list
         self.advertised_topics = []
+        self.local_subscriber = []
+        self.remote_subscriber = []
+        self.local_publisher = []
+        self.remote_publisher = []
+        # Object list
         self.local_topics = []
         self.remote_topics = []
 
-        self.create_timer(1, self.update_topic_list)
-        self.create_timer(1, self.advertise_to_remote)
-        self.create_timer(1, self.advertise_to_local)
-        self.create_timer(1, self.test)
+        self.create_timer(1, self.update)
+        # self.create_timer(1, self.test)
 
-    def update_topic_list(self):
-        local_list = list(
-            set(roslibpy.Ros.get_topics(self.local, callback=None))
-            - set(self.advertised_topics)
-            - set(self.deny_topics)
+    def test(self):
+        print(json.dumps(roslibpy.Ros.get_node_details(self.remote, "/rosbridge_websocket")))
+
+    def update(self):
+        self.advertise_to_remote()
+        self.advertise_to_local()
+
+    def update_local_list(self):
+        self.local_publisher = list(
+            set(roslibpy.Ros.get_topics(self.local, callback=None)) - set(self.deny_topics)
         )
-        for topic in local_list:
+        for topic in list(set(self.local_publisher) - set(self.advertised_topics)):
             if not any(x.name == topic for x in self.local_topics):
                 self.get_logger().info(f"add local topic {topic} to list")
                 self.local_topics.append(
@@ -175,12 +191,17 @@ class RosbridgeGatewayNode(Node):
                         self.local, topic, roslibpy.Ros.get_topic_type(self.local, topic)
                     )
                 )
-        remote_list = list(
-            set(roslibpy.Ros.get_topics(self.remote, callback=None))
-            - set(self.advertised_topics)
-            - set(self.deny_topics)
+        subscribing = []
+        for node in roslibpy.Ros.get_nodes(self.local, callback=None):
+            if node not in self.deny_hosts:
+                subscribing += roslibpy.Ros.get_node_details(self.local, node)["subscribing"]
+        self.local_subscriber = list(set(subscribing))
+
+    def update_remote_list(self):
+        self.remote_publisher = list(
+            set(roslibpy.Ros.get_topics(self.remote, callback=None)) - set(self.deny_topics)
         )
-        for topic in remote_list:
+        for topic in list(set(self.remote_publisher) - set(self.advertised_topics)):
             if not any(x.name == topic for x in self.remote_topics):
                 self.get_logger().info(f"add remote topic {topic} to list")
                 self.remote_topics.append(
@@ -188,29 +209,49 @@ class RosbridgeGatewayNode(Node):
                         self.remote, topic, roslibpy.Ros.get_topic_type(self.remote, topic)
                     )
                 )
-
-    def test(self):
-        for topic in self.local_topics:
-            if topic.is_subscribed:
-                self.get_logger().info(f"topic {topic.name} is subscribed")
+        subscribing = []
+        for node in roslibpy.Ros.get_nodes(self.remote, callback=None):
+            if node not in self.deny_hosts:
+                subscribing += roslibpy.Ros.get_node_details(self.remote, node)["subscribing"]
+        self.remote_subscriber = list(set(subscribing))
 
     def advertise_to_remote(self):
+        self.update_local_list()
         for topic in self.local_topics:
-            if not topic.is_subscribed:
+            if not hasattr(topic, "peer"):
+                topic.peer = roslibpy.Topic(self.remote, topic.name, topic.message_type)
+            if not topic.peer.is_advertised and topic.name in self.local_publisher:
                 self.get_logger().info(f"advertise {topic.name} to remote")
                 self.advertised_topics.append(topic.name)
-                remote = roslibpy.Topic(self.remote, topic.name, topic.message_type)
-                remote.advertise()
-                topic.subscribe(lambda msg: remote.publish(msg))
+                topic.peer.advertise()
+            if not topic.is_subscribed and topic.name in self.remote_subscriber:
+                self.get_logger().info(f"topic {topic.name} is subscribed")
+                topic.subscribe(lambda msg: topic.peer.publish(msg))
+            if topic.is_subscribed and topic.name not in self.remote_subscriber:
+                self.get_logger().info(f"unsubscribe topic {topic.name} to remote")
+                topic.unsubscribe()
+            if topic.peer.is_advertised and topic.name not in self.local_publisher:
+                self.get_logger().info(f"unadvertise topic {topic.name} to remote")
+                topic.peer.unadvertise()
 
     def advertise_to_local(self):
+        self.update_remote_list()
         for topic in self.remote_topics:
-            if not topic.is_subscribed:
+            if not hasattr(topic, "peer"):
+                topic.peer = roslibpy.Topic(self.local, topic.name, topic.message_type)
+            if not topic.peer.is_advertised and topic.name in self.remote_publisher:
                 self.get_logger().info(f"advertise {topic.name} to local")
                 self.advertised_topics.append(topic.name)
-                local = roslibpy.Topic(self.local, topic.name, topic.message_type)
-                local.advertise()
-                topic.subscribe(lambda msg: local.publish(msg))
+                topic.peer.advertise()
+            if not topic.is_subscribed and topic.name in self.local_subscriber:
+                self.get_logger().info(f"topic {topic.name} is subscribed")
+                topic.subscribe(lambda msg: topic.peer.publish(msg))
+            if topic.is_subscribed and topic.name not in self.local_subscriber:
+                self.get_logger().info(f"unsubscribe topic {topic.name} to local")
+                topic.unsubscribe()
+            if topic.peer.is_advertised and topic.name not in self.remote_publisher:
+                self.get_logger().info(f"unadvertise topic {topic.name} to local")
+                topic.peer.unadvertise()
 
 
 def main(args=None):
@@ -220,7 +261,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = RosbridgeGatewayNode()
 
-    spin_callback = PeriodicCallback(lambda: rclpy.spin_once(node, timeout_sec=0.01), 1000)
+    spin_callback = PeriodicCallback(lambda: rclpy.spin_once(node, timeout_sec=0.01), 1)
     spin_callback.start()
     try:
         start_hook()
