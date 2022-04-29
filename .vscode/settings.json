@@ -16,7 +16,8 @@
     ],
     "python.analysis.extraPaths": [
         "./rosbridge_library/src",
-        "./rosbridge_server/src"
+        "./rosbridge_server/src",
+        "./rosbridge_gateway/src"
     ],
     "python.autoComplete.extraPaths": [
         "/ws/install/rosbridge_test_msgs/lib/python3.8/site-packages",

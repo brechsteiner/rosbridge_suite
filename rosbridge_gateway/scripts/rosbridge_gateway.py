@@ -32,13 +32,12 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 
-import json
 import sys
 import time
 
 import rclpy
-import roslibpy
 from rclpy.node import Node
+from roslibpy import Ros
 from tornado.ioloop import IOLoop, PeriodicCallback
 
 
@@ -48,6 +47,13 @@ def start_hook():
 
 def shutdown_hook():
     IOLoop.instance().stop()
+
+
+class RosServer(Ros):
+    server_id = None
+    last_topics = []
+    add_topics = []
+    del_topics = []
 
 
 class RosbridgeGatewayNode(Node):
@@ -131,8 +137,8 @@ class RosbridgeGatewayNode(Node):
 
         self.servers = []
 
-        self.servers.append(roslibpy.Ros(host=local_address, port=local_port))
-        self.servers.append(roslibpy.Ros(host=remote_address, port=remote_port))
+        self.servers.append(RosServer(host=local_address, port=local_port))
+        self.servers.append(RosServer(host=remote_address, port=remote_port))
         self.servers[0].server_id = "local"
         self.servers[1].server_id = "remote"
 
@@ -142,7 +148,7 @@ class RosbridgeGatewayNode(Node):
                 for server in self.servers:
                     server.run()
                     if server.is_connected:
-                        self.get_logger().info(f"Gateway is connected to server {server}")
+                        self.get_logger().info(f"Gateway is connected to server {server.server_id}")
                         connected = True
                     else:
                         connected = False
@@ -154,13 +160,13 @@ class RosbridgeGatewayNode(Node):
             else:
                 self.get_logger().info(f"Gateway is connected to all servers")
 
-        self.deny_topics = [
+        self.sys_topics = [
             "/client_count",
             "/connected_clients",
             "/parameter_events",
             "/rosout",
         ]
-        self.deny_hosts = [
+        self.sys_hosts = [
             "/rosapi",
             "/rosapi_params",
             "/rosbridge_websocket",
@@ -179,40 +185,65 @@ class RosbridgeGatewayNode(Node):
         self.local_topics = []
         self.remote_topics = []
 
-        self.create_timer(0.1, self.add_topics_to_list)
-        self.create_timer(0.1, self.remove_topics_from_list)
+        self.create_timer(1, self._call_topics)
 
-    def add_topics_to_list(self):
-        self.get_logger().info(f"add list...  {len(self.topics)}")
+    def _call_topics(self):
         for server in self.servers:
-            # self.get_logger().info(f"update server topics {server.server_id}")
-            topics = list(
-                set(roslibpy.Ros.get_topics(server, callback=None)) - set(self.deny_topics)
-            )
-            for topic in topics:
-                if not any(element.name == topic for element in self.topics):
-                    self.get_logger().info(f"add {server.server_id} topic {topic} to list")
-                    _topic = roslibpy.Topic(
-                        server, topic, roslibpy.Ros.get_topic_type(server, topic)
-                    )
-                    _topic.peers = {}
-                    self.topics.append(_topic)
+            self.get_logger().info(f"call topics from server {server.server_id}")
+            RosServer.get_topics(server, lambda t, s=server: self._diff_topics(t, s))
 
-    def remove_topics_from_list(self):
-        self.get_logger().info(f"remove list...  {len(self.topics)}")
-        for server in self.servers:
-            for topic in self.topics:
-                if topic.ros is server and topic.name not in topics:
-                    for server in topic.peers:
-                        self.get_logger().info(
-                            f"unadvertise topic {topic.name} from server {server.server_id}"
-                        )
-                        topic.peers[server].unadvertise()
-                    self.get_logger().info(
-                        f"remove topic {topic.name} from server {server.server_id}"
-                    )
-                    self.topics.remove(topic)
+    def _diff_topics(self, topics, server):
+        self.get_logger().info(f"diff from server {server.server_id}")
+        last = set(server.last_topics)
+        next = set(topics["topics"]) - set(self.sys_topics)
+        del_t = last - next
+        _add_t = next - last
 
+        ## fehler empty sets
+        add_t = set(_add_t.update(set(server.add_topics)))
+        if len(del_t):
+            server.add_topics = list(add_t - del_t)
+        elif len(add_t):
+            server.add_topics = list(add_t)
+
+        self.get_logger().info(
+            f"diff topic {server.server_id} topic to remove {server.del_topics } .. to add {server.add_topics }"
+        )
+
+        server.last_topics = list(next)
+
+
+#    def add_topics_to_list(self):
+#        self.get_logger().info(f"add list...  {len(self.topics)}")
+#        for server in self.servers:
+#            # self.get_logger().info(f"update server topics {server.server_id}")
+#            topics = list(
+#                set(roslibpy.Ros.get_topics(server, callback=None)) - set(self.deny_topics)
+#            )
+#            for topic in topics:
+#                if not any(element.name == topic for element in self.topics):
+#                    self.get_logger().info(f"add {server.server_id} topic {topic} to list")
+#                    _topic = roslibpy.Topic(
+#                        server, topic, roslibpy.Ros.get_topic_type(server, topic)
+#                    )
+#                    _topic.peers = {}
+#                    self.topics.append(_topic)
+#
+#    def remove_topics_from_list(self):
+#        self.get_logger().info(f"remove list...  {len(self.topics)}")
+#        for server in self.servers:
+#            for topic in self.topics:
+#                if topic.ros is server and topic.name not in topics:
+#                    for server in topic.peers:
+#                        self.get_logger().info(
+#                            f"unadvertise topic {topic.name} from server {server.server_id}"
+#                        )
+#                        topic.peers[server].unadvertise()
+#                    self.get_logger().info(
+#                        f"remove topic {topic.name} from server {server.server_id}"
+#                    )
+#                    self.topics.remove(topic)
+#
 
 #
 #        for topic in self.topics:
