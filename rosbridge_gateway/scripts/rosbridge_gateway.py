@@ -178,14 +178,18 @@ class RosbridgeGatewayNode(Node):
     def update(self):
         self.advertise_to_remote()
         self.advertise_to_local()
+        self.get_logger().info(f"advertised_topics {self.advertised_topics}")
 
     def update_local_list(self):
         self.local_publisher = list(
-            set(roslibpy.Ros.get_topics(self.local, callback=None)) - set(self.deny_topics)
+            set(roslibpy.Ros.get_topics(self.local, callback=None))
+            - set(self.deny_topics)
+            - set(self.advertised_topics)
         )
-        for topic in list(set(self.local_publisher) - set(self.advertised_topics)):
+        self.get_logger().info(f"local_publisher {self.local_publisher}")
+        for topic in list(set(self.local_publisher)):
             if not any(x.name == topic for x in self.local_topics):
-                self.get_logger().info(f"add local topic {topic} to list")
+                self.get_logger().info(f"add local topic {topic} to local list")
                 self.local_topics.append(
                     roslibpy.Topic(
                         self.local, topic, roslibpy.Ros.get_topic_type(self.local, topic)
@@ -196,14 +200,18 @@ class RosbridgeGatewayNode(Node):
             if node not in self.deny_hosts:
                 subscribing += roslibpy.Ros.get_node_details(self.local, node)["subscribing"]
         self.local_subscriber = list(set(subscribing))
+        self.get_logger().info(f"local_subscriber {self.local_subscriber}")
 
     def update_remote_list(self):
         self.remote_publisher = list(
-            set(roslibpy.Ros.get_topics(self.remote, callback=None)) - set(self.deny_topics)
+            set(roslibpy.Ros.get_topics(self.remote, callback=None))
+            - set(self.deny_topics)
+            - set(self.advertised_topics)
         )
-        for topic in list(set(self.remote_publisher) - set(self.advertised_topics)):
+        self.get_logger().info(f"remote_publisher {self.remote_publisher}")
+        for topic in list(set(self.remote_publisher)):
             if not any(x.name == topic for x in self.remote_topics):
-                self.get_logger().info(f"add remote topic {topic} to list")
+                self.get_logger().info(f"add remote topic {topic} to remote list")
                 self.remote_topics.append(
                     roslibpy.Topic(
                         self.remote, topic, roslibpy.Ros.get_topic_type(self.remote, topic)
@@ -214,10 +222,12 @@ class RosbridgeGatewayNode(Node):
             if node not in self.deny_hosts:
                 subscribing += roslibpy.Ros.get_node_details(self.remote, node)["subscribing"]
         self.remote_subscriber = list(set(subscribing))
+        self.get_logger().info(f"remote_subscriber {self.remote_subscriber}")
 
     def advertise_to_remote(self):
         self.update_local_list()
         for topic in self.local_topics:
+            self.get_logger().info(f"advertise_to_remote {topic.name}")
             if not hasattr(topic, "peer"):
                 topic.peer = roslibpy.Topic(self.remote, topic.name, topic.message_type)
             if not topic.peer.is_advertised and topic.name in self.local_publisher:
@@ -233,10 +243,14 @@ class RosbridgeGatewayNode(Node):
             if topic.peer.is_advertised and topic.name not in self.local_publisher:
                 self.get_logger().info(f"unadvertise topic {topic.name} to remote")
                 topic.peer.unadvertise()
+                self.advertised_topics.remove(topic.name)
+                self.get_logger().info(f"remove topic {topic.name} from local topic list")
+                self.local_topics.remove(topic)
 
     def advertise_to_local(self):
         self.update_remote_list()
         for topic in self.remote_topics:
+            self.get_logger().info(f"advertise_to_local {topic.name}")
             if not hasattr(topic, "peer"):
                 topic.peer = roslibpy.Topic(self.local, topic.name, topic.message_type)
             if not topic.peer.is_advertised and topic.name in self.remote_publisher:
@@ -252,6 +266,9 @@ class RosbridgeGatewayNode(Node):
             if topic.peer.is_advertised and topic.name not in self.remote_publisher:
                 self.get_logger().info(f"unadvertise topic {topic.name} to local")
                 topic.peer.unadvertise()
+                self.advertised_topics.remove(topic.name)
+                self.get_logger().info(f"remove topic {topic.name} from remote topic list")
+                self.remote_topics.remove(topic)
 
 
 def main(args=None):
