@@ -36,7 +36,6 @@ import sys
 import time
 
 import rclpy
-import roslibpy
 from rclpy.node import Node
 from roslibpy import Ros, Topic
 from tornado.ioloop import IOLoop, PeriodicCallback
@@ -52,7 +51,6 @@ def shutdown_hook():
 
 class RosServer(Ros):
     server_id = None
-    pub_topics = []
     last_topics = []
 
 
@@ -182,31 +180,20 @@ class RosbridgeGatewayNode(Node):
 
         self.topics = []
 
-        # String list
-        self.published_topics = []
-        self.advertised_topics = []
-        self.local_subscriber = []
-        self.remote_subscriber = []
-        self.local_publisher = []
-        self.remote_publisher = []
-        # Object list
-        self.local_topics = []
-        self.remote_topics = []
-
         self.create_timer(1, self._call_topics)
 
     def _call_topics(self):
-        self.get_logger().info(f"list {self.topics}")
+        self.get_logger().info(f"gateway topics: {self._get_topics()}")
         for server in self.servers:
             self.get_logger().info(f"call topics from server {server.server_id}")
             RosServer.get_topics(server, lambda t, s=server: self._diff_topics(t, s))
 
     def _diff_topics(self, topics, server):
-        last = set(server.last_topics)  # - set(self._get_topics())
-        next = set(topics["topics"]) - set(self.sys_topics)  # - set(self._get_topics())
+        last = set(server.last_topics)
+        next = set(topics["topics"]) - set(self.sys_topics)
         del_t = last - next
         for topic in del_t:
-            self._del_topic([t for t in self.topics if t.name == topic][0])
+            self._del_topic([t for t in self.topics if t.name == topic][0], server)
         for topic in next - last - del_t:
             self._add_topic(topic, topics["types"][topics["topics"].index(topic)], server)
         server.last_topics = list(next)
@@ -218,12 +205,15 @@ class RosbridgeGatewayNode(Node):
         return topics
 
     def _add_topic(self, topic_name, topic_type, server):
-        self.get_logger().info(f"add topic {topic_name} type {topic_type}")
+        self.get_logger().info(f"add topic {topic_name} type {topic_type} to {server.server_id}")
         self.topics.append(RosTopic(server, topic_name, topic_type))
 
-    def _del_topic(self, topic):
-        self.get_logger().info(f"del topic {topic.name} type {topic.message_type}")
-        self.topics.remove(topic)
+    def _del_topic(self, topic, server):
+        if topic.ros == server:
+            self.get_logger().info(
+                f"del topic {topic.name} type {topic.message_type} from {server.server_id}"
+            )
+            self.topics.remove(topic)
 
 
 #    def add_topics_to_list(self):
