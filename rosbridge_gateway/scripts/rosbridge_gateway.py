@@ -50,15 +50,20 @@ def shutdown_hook():
 
 
 class RosServer(Ros):
-    server_id = None
-    last_topics = []
+    id = None
+    sub = []
+    pub = []
+    # last_topics = []
 
 
 class RosTopic(Topic):
-    def __eq__(self, other):
-        if isinstance(other, RosTopic):
-            return self.name == other.name and self.message_type == other.message_type
-        return False
+    def test(self):
+        print(self.name)
+
+    # def __eq__(self, other):
+    #    if isinstance(other, RosTopic):
+    #        return self.name == other.name and self.message_type == other.message_type
+    #    return False
 
 
 class RosbridgeGatewayNode(Node):
@@ -141,11 +146,12 @@ class RosbridgeGatewayNode(Node):
         ##################################################
 
         self.servers = []
+        self.topics = []
 
         self.servers.append(RosServer(host=local_address, port=local_port))
         self.servers.append(RosServer(host=remote_address, port=remote_port))
-        self.servers[0].server_id = "local"
-        self.servers[1].server_id = "remote"
+        self.servers[0].id = "local"
+        self.servers[1].id = "remote"
 
         connected = False
         while not connected and self.context.ok():
@@ -153,7 +159,7 @@ class RosbridgeGatewayNode(Node):
                 for server in self.servers:
                     server.run()
                     if server.is_connected:
-                        self.get_logger().info(f"Gateway is connected to server {server.server_id}")
+                        self.get_logger().info(f"Gateway is connected to server {server.id}")
                         connected = True
                     else:
                         connected = False
@@ -172,21 +178,65 @@ class RosbridgeGatewayNode(Node):
             "/rosout",
         ]
         self.sys_hosts = [
+            "/parameter_events",
             "/rosapi",
             "/rosapi_params",
-            "/rosbridge_websocket",
             "/rosbridge_gateway",
+            "/rosbridge_websocket",
+            "/rosout",
         ]
 
-        self.topics = []
+        self.create_timer(1, self._get_nodes)
 
-        self.create_timer(1, self._call_topics)
-
-    def _call_topics(self):
-        self.get_logger().info(f"gateway topics: {self._get_topics()}")
+    def _get_nodes(self):
         for server in self.servers:
-            self.get_logger().info(f"call topics from server {server.server_id}")
-            RosServer.get_topics(server, lambda t, s=server: self._diff_topics(t, s))
+            self.get_logger().info(f"get nodes from {server.id}")
+            server.get_nodes(lambda nodes, server=server: self._get_node_details(nodes, server))
+            self.get_logger().info(f"pub on {server.id}: {server.pub}")
+            self.get_logger().info(f"sub on {server.id}: {server.sub}")
+            # self.get_logger().info(f"svc on {server.id}: {server.svc}")
+
+    def _get_node_details(self, nodes, server):
+        for node in self._diff_array(nodes["nodes"], self.sys_hosts):
+            self.get_logger().info(f"get node detail {node} from {server.id}")
+            server.get_node_details(
+                node, lambda details, server=server: self._update_details(details, server)
+            )
+
+    def _update_details(self, details, server):
+        self.get_logger().info(f"update server details on {server.id}")
+        server.pub = list(set(server.pub + details["publishing"]) - set(self.sys_topics))
+        server.sub = list(set(server.sub + details["subscribing"]) - set(self.sys_topics))
+        server.svc = list(set(details["services"]))
+
+    def _redistribute_topics(self, details, server):
+        last_pub = server.pub
+        next_pub = self._diff_array(details["publishing"], self.sys_topics)
+        for topic in self._diff_array(last_pub, next_pub):
+            self.get_logger().info(f"del pub {topic} on {server.id}")
+            # self._del_topic([t for t in self.topics if t.name == topic][0], server)
+        for topic in self._diff_array(next_pub, last_pub):
+            self.get_logger().info(f"add pub {topic} on {server.id}")
+            server.get_topic_type(
+                topic,
+                lambda type, topic=topic, server=server: self._add_topic(
+                    topic, type["type"], server
+                ),
+            )
+        server.pub = last_pub
+
+        last_sub = server.sub
+        next_sub = self._diff_array(details["subscribing"], self.sys_topics)
+        for topic in self._diff_array(last_sub, next_sub):
+            self.get_logger().info(f"del sub {topic} on {server.id}")
+            # self._del_topic([t for t in self.topics if t.name == topic][0], server)
+        for topic in self._diff_array(next_sub, last_sub):
+            self.get_logger().info(f"add sub {topic} on {server.id}")
+            # self._add_topic(topic, topics["types"][topics["topics"].index(topic)], server)
+        server.sub = last_sub
+
+    def _diff_array(self, a, b):
+        return [x for x in a if x not in b]
 
     def _diff_topics(self, topics, server):
         last = set(server.last_topics)
@@ -198,34 +248,43 @@ class RosbridgeGatewayNode(Node):
             self._add_topic(topic, topics["types"][topics["topics"].index(topic)], server)
         server.last_topics = list(next)
 
-    def _get_topics(self):
-        topics = []
-        for topic in self.topics:
-            topics.append(topic.name)
-        return topics
-
     def _add_topic(self, topic_name, topic_type, server):
-        self.get_logger().info(f"add topic {topic_name} type {topic_type} to {server.server_id}")
+        self.get_logger().info(f"add topic {topic_name} type {topic_type} to {server.id}")
         self.topics.append(RosTopic(server, topic_name, topic_type))
 
     def _del_topic(self, topic, server):
         if topic.ros == server:
             self.get_logger().info(
-                f"del topic {topic.name} type {topic.message_type} from {server.server_id}"
+                f"del topic {topic.name} type {topic.message_type} from {server.id}"
             )
             self.topics.remove(topic)
 
 
+#    def _call_topics(self):
+#        self.get_logger().info(f"gateway topics: {self._get_topics()}")
+#        for server in self.servers:
+#            self.get_logger().info(f"call topics from server {server.id}")
+#            RosServer.get_topics(server, lambda t, s=server: self._diff_topics(t, s))
+#
+#    def _get_topics(self):
+#        topics = []
+#        for topic in self.topics:
+#            topics.append(topic.name)
+#        return topics
+#
+
+# ----------------------------------------------------------------------------------------------------------
+
 #    def add_topics_to_list(self):
 #        self.get_logger().info(f"add list...  {len(self.topics)}")
 #        for server in self.servers:
-#            # self.get_logger().info(f"update server topics {server.server_id}")
+#            # self.get_logger().info(f"update server topics {server.id}")
 #            topics = list(
 #                set(roslibpy.Ros.get_topics(server, callback=None)) - set(self.deny_topics)
 #            )
 #            for topic in topics:
 #                if not any(element.name == topic for element in self.topics):
-#                    self.get_logger().info(f"add {server.server_id} topic {topic} to list")
+#                    self.get_logger().info(f"add {server.id} topic {topic} to list")
 #                    _topic = roslibpy.Topic(
 #                        server, topic, roslibpy.Ros.get_topic_type(server, topic)
 #                    )
@@ -239,11 +298,11 @@ class RosbridgeGatewayNode(Node):
 #                if topic.ros is server and topic.name not in topics:
 #                    for server in topic.peers:
 #                        self.get_logger().info(
-#                            f"unadvertise topic {topic.name} from server {server.server_id}"
+#                            f"unadvertise topic {topic.name} from server {server.id}"
 #                        )
 #                        topic.peers[server].unadvertise()
 #                    self.get_logger().info(
-#                        f"remove topic {topic.name} from server {server.server_id}"
+#                        f"remove topic {topic.name} from server {server.id}"
 #                    )
 #                    self.topics.remove(topic)
 #
@@ -254,11 +313,11 @@ class RosbridgeGatewayNode(Node):
 #                if topic.ros is not server:
 #                    if server not in topic.peers:
 #                        self.get_logger().info(
-#                            f"add peer server {server.server_id} to {topic.name}"
+#                            f"add peer server {server.id} to {topic.name}"
 #                        )
 #                        topic.peers[server] = roslibpy.Topic(server, topic.name, topic.message_type)
 #                    if not topic.peers[server].is_advertised:
-#                        self.get_logger().info(f"advertise {topic.name} to {server.server_id}")
+#                        self.get_logger().info(f"advertise {topic.name} to {server.id}")
 #                        topic.peers[server].advertise()
 
 
