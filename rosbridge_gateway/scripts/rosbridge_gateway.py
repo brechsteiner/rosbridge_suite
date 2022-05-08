@@ -32,8 +32,11 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 
+import logging
+import queue
 import sys
 import time
+from functools import partial
 
 import rclpy
 from rclpy.node import Node
@@ -51,14 +54,24 @@ def shutdown_hook():
 
 class RosServer(Ros):
     id = None
-    sub = []
-    prev_sub = []
+    next_lock = False
+    topics = []
+    queue = 0
     pub = []
     prev_pub = []
-    topics = []
+    next_pub = []
+    sub = []
+    prev_sub = []
+    next_sub = []
+
+    def __init__(self, id, **kw):
+        self.id = id
+        super(RosServer, self).__init__(**kw)
 
 
 class RosTopic(Topic):
+    peers = []
+
     def __eq__(self, other):
         if isinstance(other, RosTopic):
             return self.name == other.name and self.message_type == other.message_type
@@ -144,21 +157,18 @@ class RosbridgeGatewayNode(Node):
         # Done with parameter handling                   #
         ##################################################
 
-        self.servers = []
-        self.topics = []
+        self.servers = {}
 
-        self.servers.append(RosServer(host=local_address, port=local_port))
-        self.servers.append(RosServer(host=remote_address, port=remote_port))
-        self.servers[0].id = "local"
-        self.servers[1].id = "remote"
+        self.servers["local"] = RosServer(host=local_address, port=local_port, id="local")
+        self.servers["remote"] = RosServer(host=remote_address, port=remote_port, id="remote")
 
         connected = False
         while not connected and self.context.ok():
             try:
-                for server in self.servers:
+                for id, server in self.servers.items():
                     server.run()
                     if server.is_connected:
-                        self.get_logger().info(f"Gateway is connected to server {server.id}")
+                        self.get_logger().info(f"Gateway is connected to server {id}")
                         connected = True
                     else:
                         connected = False
@@ -185,212 +195,68 @@ class RosbridgeGatewayNode(Node):
             "/rosout",
         ]
 
+        self.get_logger().set_level(logging.DEBUG)
+
+        self.create_timer(2, self._get_statistics)
         self.create_timer(1, self._get_nodes)
-        self.create_timer(1, self._redistribute_pub)
+        self.create_timer(1, self._update_topics)
 
-    def _diff_array(self, a, b):
-        return [x for x in a if x not in b]
-
-    def _get_topics(self, server):
+    def _get_topic_names(self, server):
         topics = []
         for topic in server.topics:
             topics.append(topic.name)
         return topics
 
-    def _get_nodes(self):
-        for server in self.servers:
-            self.get_logger().info(f"{server.id} topics: {self._get_topics(server)}")
-            server.get_nodes(lambda nodes, server=server: self._get_node_details(nodes, server))
+    def _get_statistics(self):
+        for server in self.servers.values():
+            self.get_logger().info(f"topic on {server.id}: {self._get_topic_names(server)}")
             self.get_logger().info(f"pub on {server.id}: {server.pub}")
             self.get_logger().info(f"sub on {server.id}: {server.sub}")
-            # self.get_logger().info(f"svc on {server.id}: {server.svc}")
+            self.get_logger().info(f"next_pub on {server.id}: {server.next_pub}")
+            self.get_logger().info(f"next_sub on {server.id}: {server.next_sub}")
+            self.get_logger().info(f"qsize on {server.id}: {server.queue}")
+
+    def _get_nodes(self):
+        for server in self.servers.values():
+            if server.queue == 0:
+                server.pub, server.sub = list(set(server.next_pub)), list(set(server.next_sub))
+                server.next_pub.clear()
+                server.next_sub.clear()
+                self.get_logger().debug(f"get_nodes {server.id}")
+                server.get_nodes(partial(self._get_node_details, server=server))
+            else:
+                self.get_logger().debug(f"wait to get_nodes {server.id}")
 
     def _get_node_details(self, nodes, server):
-        for node in self._diff_array(nodes["nodes"], self.sys_nodes):
-            self.get_logger().info(f"get node detail {node} from {server.id}")
-            server.get_node_details(
-                node, lambda details, server=server: self._update_details(details, server)
-            )
+        self.get_logger().debug(f"get_node_details {server.id}|{nodes}")
+        _nodes = set(nodes["nodes"]) - set(self.sys_nodes)
+        server.queue = len(_nodes)
+        for node in _nodes:
+            server.get_node_details(node, partial(self._update_node_details, server=server))
 
-    def _update_details(self, details, server):
-        self.get_logger().info(f"update server details on {server.id}")
-        server.pub = list(set(server.pub + details["publishing"]) - set(self.sys_topics))
-        server.sub = list(set(server.sub + details["subscribing"]) - set(self.sys_topics))
-        server.svc = list(set(details["services"]))
+    def _update_node_details(self, result, server):
+        self.get_logger().debug(f"update_node_details {server.id}")
+        server.next_pub = list(
+            set(server.next_pub).union(set(result["publishing"]) - set(self.sys_topics))
+        )
+        server.next_sub = list(
+            set(server.next_sub).union(set(result["subscribing"]) - set(self.sys_topics))
+        )
+        server.queue -= 1
 
-    def _redistribute_pub(self):
-        for server in self.servers:
-            for topic in set(server.prev_pub) - set(server.pub):
-                self.get_logger().info(f"del pub {topic} on {server.id}")
-                self._del_topic([t for t in server.topics if t.name == topic][0], server)
-            for topic in set(server.pub) - set(server.prev_pub):
-                self.get_logger().info(f"add pub {topic} on {server.id}")
-                server.get_topic_type(
-                    topic,
-                    lambda type, topic=topic, server=server: self._add_topic(
-                        topic, type["type"], server
-                    ),
-                )
-            server.prev_pub = server.pub
-
-    def _add_topic(self, topic, type, server):
-        topic = RosTopic(server, topic, type)
-        if topic not in server.topics:
-            self.get_logger().info(f"add topic {topic.name} type {type} to {server.id}")
-            server.topics.append(topic)
-
-    def _del_topic(self, topic, server):
-        if topic.ros == server:
-            self.get_logger().info(
-                f"del topic {topic.name} type {topic.message_type} from {server.id}"
-            )
-            server.topics.remove(topic)
-
-
-#    def _diff_topics(self, topics, server):
-#        last = set(server.last_topics) - set(self._get_topics())
-#        next = set(topics["topics"]) - set(self.sys_topics) - set(self._get_topics())
-#        del_t = last - next
-#        for topic in del_t:
-#            self._del_topic([t for t in self.topics if t.name == topic][0], server)
-#        for topic in next - last - del_t:
-#            self._add_topic(topic, topics["types"][topics["topics"].index(topic)], server)
-#        server.last_topics = list(next)
-#
-#    def _add_topic(self, topic_name, topic_type, server):
-#        self.get_logger().info(f"add topic {topic_name} type {topic_type} to {server.id}")
-#        self.topics.append(RosTopic(server, topic_name, topic_type))
-#
-#    def _del_topic(self, topic, server):
-#        if topic.ros == server:
-#            self.get_logger().info(
-#                f"del topic {topic.name} type {topic.message_type} from {server.id}"
-#            )
-#            self.topics.remove(topic)
-#
-#    def _distribute_topic(self):
-#        for topic in self.topics:
-#            for server in self.servers:
-#                if topic.ros != server and not any(peer.ros == server for peer in topic.peers):
-#                    self.get_logger().info(f"add topic {topic.name} to {server.server_id}")
-#                    topic.peers.append(RosTopic(server, topic.name, topic.message_type))
-#            for peer in topic.peers:
-#                if not peer.is_advertised:
-#                    self.get_logger().info(f"advertise {topic.name} on peer {peer.ros.server_id}")
-#                    peer.advertise()
-#
-#    def _update_nodes(self):
-#        for server in self.servers:
-#            self.get_logger().info(f"call nodes from server {server.server_id}")
-#            server.get_nodes(lambda n, s=server: self._get_node_details(n, s))
-#
-#    def _get_node_details(self, nodes, server):
-#        for node in set(nodes["nodes"]) - set(self.sys_nodes):
-#            self.get_logger().info(f"get details for node {node}")
-#            server.get_node_details(node, lambda d, s=server: self._connect_nodes(d, s))
-#
-#    def _connect_nodes(self, details, server):
-#        for topic in set(details["subscribing"]) - set(self.sys_topics):
-#            self.get_logger().info(f"check subscribe {topic} for server {server.server_id}")
-#            for t in self.topics:
-#                if t.name == topic and any(peer.ros == server for peer in t.peers):
-#                    peer = t.peers[[peer.ros for peer in t.peers].index(server)]
-#                    if not peer.subscribed:
-#                        self.get_logger().info(f"subscribe {t.name}")
-#                        peer.subscribed = True
-#                        t.subscribe(lambda msg: peer.publish(msg))
-#
-#    def _get_topics(self):
-#        topics = []
-#        for topic in self.topics:
-#            topics.append(topic.name)
-#        self.get_logger().info(f"topics {self.topics}")
-#
-#
-#                if not peer.is_subscribed:
-#                    self.get_logger().info(f"subscribe {topic.name} on peer {peer.ros.server_id}")
-#                    topic.subscribe(lambda msg: topic.peers[topic.peers.index(peer)].publish(msg))
-
-
-#    def _call_topics(self):
-#        self.get_logger().info(f"gateway topics: {self._get_topics()}")
-#        for server in self.servers:
-#            self.get_logger().info(f"call topics from server {server.id}")
-#            RosServer.get_topics(server, lambda t, s=server: self._diff_topics(t, s))
-#
-#    def _get_topics(self):
-#        topics = []
-#        for topic in self.topics:
-#            topics.append(topic.name)
-#        return topics
-#
-
-# ----------------------------------------------------------------------------------------------------------
-
-#    def add_topics_to_list(self):
-#        self.get_logger().info(f"add list...  {len(self.topics)}")
-#        for server in self.servers:
-#            # self.get_logger().info(f"update server topics {server.id}")
-#            topics = list(
-#                set(roslibpy.Ros.get_topics(server, callback=None)) - set(self.deny_topics)
-#            )
-#            for topic in topics:
-#                if not any(element.name == topic for element in self.topics):
-#                    self.get_logger().info(f"add {server.id} topic {topic} to list")
-#                    _topic = roslibpy.Topic(
-#                        server, topic, roslibpy.Ros.get_topic_type(server, topic)
-#                    )
-#                    _topic.peers = {}
-#                    self.topics.append(_topic)
-#
-#    def remove_topics_from_list(self):
-#        self.get_logger().info(f"remove list...  {len(self.topics)}")
-#        for server in self.servers:
-#            for topic in self.topics:
-#                if topic.ros is server and topic.name not in topics:
-#                    for server in topic.peers:
-#                        self.get_logger().info(
-#                            f"unadvertise topic {topic.name} from server {server.id}"
-#                        )
-#                        topic.peers[server].unadvertise()
-#                    self.get_logger().info(
-#                        f"remove topic {topic.name} from server {server.id}"
-#                    )
-#                    self.topics.remove(topic)
-#
-
-#
-#        for topic in self.topics:
-#            for server in self.servers:
-#                if topic.ros is not server:
-#                    if server not in topic.peers:
-#                        self.get_logger().info(
-#                            f"add peer server {server.id} to {topic.name}"
-#                        )
-#                        topic.peers[server] = roslibpy.Topic(server, topic.name, topic.message_type)
-#                    if not topic.peers[server].is_advertised:
-#                        self.get_logger().info(f"advertise {topic.name} to {server.id}")
-#                        topic.peers[server].advertise()
-
-
-#            if not hasattr(topic, "peer"):
-#                topic.peer = roslibpy.Topic(self.remote, topic.name, topic.message_type)
-#            if not topic.peer.is_advertised and topic.name in self.local_publisher:
-#                self.get_logger().info(f"advertise {topic.name} to remote")
-#                self.advertised_topics.append(topic.name)
-#                topic.peer.advertise()
-#            if not topic.is_subscribed and topic.name in self.remote_subscriber:
-#                self.get_logger().info(f"topic {topic.name} is subscribed")
-#                topic.subscribe(lambda msg: topic.peer.publish(msg))
-#            if topic.is_subscribed and topic.name not in self.remote_subscriber:
-#                self.get_logger().info(f"unsubscribe topic {topic.name} to remote")
-#                topic.unsubscribe()
-#            if topic.peer.is_advertised and topic.name not in self.local_publisher:
-#                self.get_logger().info(f"unadvertise topic {topic.name} to remote")
-#                topic.peer.unadvertise()
-#                self.advertised_topics.remove(topic.name)
-#                self.get_logger().info(f"remove topic {topic.name} from local topic list")
-#                self.local_topics.remove(topic)
+    def _update_topics(self):
+        for server in self.servers.values():
+            prev_pub, pub = set(server.prev_pub), set(server.pub)
+            prev_sub, sub = set(server.prev_sub), set(server.sub)
+            server.prev_pub, server.prev_sub = list(pub), list(sub)
+            for topic in pub - prev_pub:
+                self.get_logger().warn(f"add pub {topic} on {server.id}")
+            for topic in prev_pub - pub:
+                self.get_logger().warn(f"del pub {topic} on {server.id}")
+            for topic in sub - prev_sub:
+                self.get_logger().warn(f"add sub {topic} on {server.id}")
+            for topic in prev_sub - sub:
+                self.get_logger().warn(f"del sub {topic} on {server.id}")
 
 
 def main(args=None):
