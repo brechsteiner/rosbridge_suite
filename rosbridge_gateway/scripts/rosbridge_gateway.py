@@ -54,13 +54,12 @@ def shutdown_hook():
 
 class RosServer(Ros):
     id = None
-    next_lock = False
     topics = []
-    queue = 0
-    pub = []
+    nodes = 0
+    pub = queue.Queue()
     prev_pub = []
     next_pub = []
-    sub = []
+    sub = queue.Queue()
     prev_sub = []
     next_sub = []
 
@@ -71,6 +70,7 @@ class RosServer(Ros):
 
 class RosTopic(Topic):
     peers = []
+    mode = None
 
     def __eq__(self, other):
         if isinstance(other, RosTopic):
@@ -209,17 +209,21 @@ class RosbridgeGatewayNode(Node):
 
     def _get_statistics(self):
         for server in self.servers.values():
+            self.get_logger().info(f"-----------------------------------------------------")
             self.get_logger().info(f"topic on {server.id}: {self._get_topic_names(server)}")
-            self.get_logger().info(f"pub on {server.id}: {server.pub}")
-            self.get_logger().info(f"sub on {server.id}: {server.sub}")
+            self.get_logger().info(f"prev_pub on {server.id}: {server.prev_pub}")
+            self.get_logger().info(f"prev_sub on {server.id}: {server.prev_sub}")
+            self.get_logger().info(f"pub on {server.id}: {server.pub.queue}")
+            self.get_logger().info(f"sub on {server.id}: {server.sub.queue}")
             self.get_logger().info(f"next_pub on {server.id}: {server.next_pub}")
             self.get_logger().info(f"next_sub on {server.id}: {server.next_sub}")
-            self.get_logger().info(f"qsize on {server.id}: {server.queue}")
+            self.get_logger().info(f"-----------------------------------------------------")
 
     def _get_nodes(self):
         for server in self.servers.values():
-            if server.queue == 0:
-                server.pub, server.sub = list(set(server.next_pub)), list(set(server.next_sub))
+            if server.nodes == 0:
+                server.pub.put(list(set(server.next_pub)))
+                server.sub.put(list(set(server.next_sub)))
                 server.next_pub.clear()
                 server.next_sub.clear()
                 self.get_logger().debug(f"get_nodes {server.id}")
@@ -230,7 +234,7 @@ class RosbridgeGatewayNode(Node):
     def _get_node_details(self, nodes, server):
         self.get_logger().debug(f"get_node_details {server.id}|{nodes}")
         _nodes = set(nodes["nodes"]) - set(self.sys_nodes)
-        server.queue = len(_nodes)
+        server.nodes = len(_nodes)
         for node in _nodes:
             server.get_node_details(node, partial(self._update_node_details, server=server))
 
@@ -242,21 +246,55 @@ class RosbridgeGatewayNode(Node):
         server.next_sub = list(
             set(server.next_sub).union(set(result["subscribing"]) - set(self.sys_topics))
         )
-        server.queue -= 1
+        server.nodes -= 1
 
     def _update_topics(self):
         for server in self.servers.values():
-            prev_pub, pub = set(server.prev_pub), set(server.pub)
-            prev_sub, sub = set(server.prev_sub), set(server.sub)
+
+            if not server.pub.empty():
+                prev_pub, pub = set(server.prev_pub), set(server.pub.get())
+                for topic in prev_pub - pub:
+                    self.get_logger().debug(f"del pub {topic} on {server.id}")
+                    self._del_pub_topic(topic, server)
+                for topic in pub - prev_pub:
+                    self.get_logger().debug(f"add pub {topic} on {server.id}")
+                    self._add_pub_topic(topic, server)
+
+            if not server.sub.empty():
+                prev_sub, sub = set(server.prev_sub), set(server.sub.get())
+                for topic in prev_sub - sub:
+                    self.get_logger().debug(f"del sub {topic} on {server.id}")
+                for topic in sub - prev_sub:
+                    self.get_logger().debug(f"add sub {topic} on {server.id}")
+
             server.prev_pub, server.prev_sub = list(pub), list(sub)
-            for topic in pub - prev_pub:
-                self.get_logger().warn(f"add pub {topic} on {server.id}")
-            for topic in prev_pub - pub:
-                self.get_logger().warn(f"del pub {topic} on {server.id}")
-            for topic in sub - prev_sub:
-                self.get_logger().warn(f"add sub {topic} on {server.id}")
-            for topic in prev_sub - sub:
-                self.get_logger().warn(f"del sub {topic} on {server.id}")
+
+    def _add_pub_topic(self, topic, server):
+        server.get_topic_type(
+            topic,
+            partial(self._mod_topic, topic=topic, server=server, action="add", mode="pub"),
+        )
+
+    def _del_pub_topic(self, topic, server):
+        server.get_topic_type(
+            topic,
+            partial(self._mod_topic, topic=topic, server=server, action="del", mode="pub"),
+        )
+
+    def _mod_topic(self, type, topic, server, action, mode):
+        _topic = RosTopic(server, topic, type)
+        _topic.mode = mode
+        if action == "add" and _topic not in server.topics:
+            self.get_logger().warn(f"add topic {topic} on {server.id}")
+            server.topics = server.topics.append(_topic)
+        elif action == "del" and _topic in server.topics:
+            self.get_logger().warn(f"del topic {topic} on {server.id}")
+            item = server.topics[_topic]
+            if item.is_advertised:
+                item.unadvertise()
+            if item.is_subscribed:
+                item.unsubscribe()
+            server.topics.remove(item)
 
 
 def main(args=None):
