@@ -175,7 +175,7 @@ class RosbridgeGatewayNode(Node):
                     else:
                         connected = False
             except OSError as e:
-                self.get_logger().warn(
+                self.get_logger().info(
                     "Unable to start Gateway: {} " "Retrying in {}s.".format(e, retry_startup_delay)
                 )
                 time.sleep(retry_startup_delay)
@@ -197,7 +197,7 @@ class RosbridgeGatewayNode(Node):
             "/rosout",
         ]
 
-        self.get_logger().set_level(logging.DEBUG)
+        self.get_logger().set_level(logging.INFO)
 
         self.create_timer(2, self._get_statistics)
         self.create_timer(1, self._get_nodes)
@@ -213,15 +213,15 @@ class RosbridgeGatewayNode(Node):
 
     def _get_statistics(self):
         for server in self.servers.values():
-            self.get_logger().info(f"-----------------------------------------------------")
-            self.get_logger().info(f"topic on {server.id}: {self._get_topic_names(server)}")
-            self.get_logger().info(f"prev_pub on {server.id}: {server.prev_pub}")
-            self.get_logger().info(f"prev_sub on {server.id}: {server.prev_sub}")
-            self.get_logger().info(f"pub on {server.id}: {server.pub}")
-            self.get_logger().info(f"sub on {server.id}: {server.sub}")
-            self.get_logger().info(f"next_pub on {server.id}: {server.next_pub}")
-            self.get_logger().info(f"next_sub on {server.id}: {server.next_sub}")
-            self.get_logger().info(f"-----------------------------------------------------")
+            self.get_logger().debug(f"-----------------------------------------------------")
+            self.get_logger().debug(f"topic on {server.id}: {self._get_topic_names(server)}")
+            self.get_logger().debug(f"prev_pub on {server.id}: {server.prev_pub}")
+            self.get_logger().debug(f"prev_sub on {server.id}: {server.prev_sub}")
+            self.get_logger().debug(f"pub on {server.id}: {server.pub}")
+            self.get_logger().debug(f"sub on {server.id}: {server.sub}")
+            self.get_logger().debug(f"next_pub on {server.id}: {server.next_pub}")
+            self.get_logger().debug(f"next_sub on {server.id}: {server.next_sub}")
+            self.get_logger().debug(f"-----------------------------------------------------")
 
     def _get_nodes(self):
         for server in self.servers.values():
@@ -286,7 +286,7 @@ class RosbridgeGatewayNode(Node):
     def _mod_topic(self, type, name, server, action, mode):
         _topics = [t for t in server.topics if t.name == name]
         if action == "add" and not _topics:
-            self.get_logger().warn(f"add topic {name} on {server.id}")
+            self.get_logger().info(f"add topic {name} on {server.id}")
             _topic = RosTopic(ros=server, name=name, message_type=type["type"], mode=mode)
             for peer in self.servers.values():
                 if server is not peer:
@@ -295,7 +295,7 @@ class RosbridgeGatewayNode(Node):
                 _topic.peers[peer.id] = _peer
             server.topics.append(_topic)
         elif action == "del" and _topics:
-            self.get_logger().warn(f"del topic {name} on {server.id}")
+            self.get_logger().info(f"del topic {name} on {server.id}")
             _topic = _topics[0]
             for peer in _topic.peers.values():
                 if peer.is_advertised:
@@ -313,7 +313,7 @@ class RosbridgeGatewayNode(Node):
             for topic in server.topics:
                 for peer in topic.peers.values():
                     if not topic.is_subscribed:
-                        self.get_logger().warn(f"subscribe {topic.name} at peer {peer.ros.id}")
+                        self.get_logger().info(f"subscribe {topic.name} at peer {peer.ros.id}")
                         topic.subscribe(lambda msg: peer.publish(msg))
 
 
