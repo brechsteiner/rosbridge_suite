@@ -33,7 +33,6 @@
 
 
 import logging
-import queue
 import sys
 import time
 from functools import partial
@@ -68,7 +67,7 @@ class RosServer(Ros):
 
 class RosTopic(Topic):
     def __init__(self, mode="pub", **kw):
-        self.peers = []
+        self.peers = {}
         self.mode = mode
         super(RosTopic, self).__init__(**kw)
 
@@ -203,6 +202,7 @@ class RosbridgeGatewayNode(Node):
         self.create_timer(2, self._get_statistics)
         self.create_timer(1, self._get_nodes)
         self.create_timer(1, self._update_topics)
+        self.create_timer(1, self._connect_topics)
 
     def _get_topic_names(self, server):
         topics = []
@@ -274,27 +274,47 @@ class RosbridgeGatewayNode(Node):
     def _add_pub_topic(self, topic, server):
         server.get_topic_type(
             topic,
-            partial(self._mod_topic, topic=topic, server=server, action="add", mode="pub"),
+            partial(self._mod_topic, name=topic, server=server, action="add", mode="pub"),
         )
 
     def _del_pub_topic(self, topic, server):
         server.get_topic_type(
             topic,
-            partial(self._mod_topic, topic=topic, server=server, action="del", mode="pub"),
+            partial(self._mod_topic, name=topic, server=server, action="del", mode="pub"),
         )
 
-    def _mod_topic(self, type, topic, server, action, mode):
-        _topic = [t for t in server.topics if t.name == topic]
-        if action == "add" and not _topic:
-            self.get_logger().warn(f"add topic {topic} on {server.id}")
-            server.topics.append(RosTopic(ros=server, name=topic, message_type=type, mode=mode))
-        elif action == "del" and _topic:
-            self.get_logger().warn(f"del topic {topic} on {server.id}")
-            if _topic[0].is_advertised:
-                _topic[0].unadvertise()
-            if _topic[0].is_subscribed:
-                _topic[0].unsubscribe()
-            server.topics.remove(_topic[0])
+    def _mod_topic(self, type, name, server, action, mode):
+        _topics = [t for t in server.topics if t.name == name]
+        if action == "add" and not _topics:
+            self.get_logger().warn(f"add topic {name} on {server.id}")
+            _topic = RosTopic(ros=server, name=name, message_type=type["type"], mode=mode)
+            for peer in self.servers.values():
+                if server is not peer:
+                    _peer = RosTopic(ros=peer, name=name, message_type=type["type"], mode=mode)
+                    _peer.advertise()
+                _topic.peers[peer.id] = _peer
+            server.topics.append(_topic)
+        elif action == "del" and _topics:
+            self.get_logger().warn(f"del topic {name} on {server.id}")
+            _topic = _topics[0]
+            for peer in _topic.peers.values():
+                if peer.is_advertised:
+                    peer.unadvertise()
+                if peer.is_subscribed:
+                    peer.unsubscribe()
+            if _topic.is_advertised:
+                _topic.unadvertise()
+            if _topic.is_subscribed:
+                _topic.unsubscribe()
+            server.topics.remove(_topic)
+
+    def _connect_topics(self):
+        for server in self.servers.values():
+            for topic in server.topics:
+                for peer in topic.peers.values():
+                    if not topic.is_subscribed:
+                        self.get_logger().warn(f"subscribe {topic.name} at peer {peer.ros.id}")
+                        topic.subscribe(lambda msg: peer.publish(msg))
 
 
 def main(args=None):
