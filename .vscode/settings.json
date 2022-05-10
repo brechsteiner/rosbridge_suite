@@ -14,4 +14,19 @@
         "--skip",
         "B101,B110,B311"
     ],
+    "python.analysis.extraPaths": [
+        "./rosbridge_library/src",
+        "./rosbridge_server/src",
+        "./rosbridge_gateway/src"
+    ],
+    "python.autoComplete.extraPaths": [
+        "/ws/install/rosbridge_test_msgs/lib/python3.8/site-packages",
+        "/ws/install/rosbridge_server/lib/python3.8/site-packages",
+        "/ws/install/rosbridge_gateway/lib/python3.8/site-packages",
+        "/ws/install/rosbridge_msgs/lib/python3.8/site-packages",
+        "/ws/install/rosapi/lib/python3.8/site-packages",
+        "/ws/install/rosbridge_library/lib/python3.8/site-packages",
+        "/ws/install/rosapi_msgs/lib/python3.8/site-packages",
+        "/opt/ros/rolling/lib/python3.8/site-packages"
+    ],
 }

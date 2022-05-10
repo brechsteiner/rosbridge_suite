@@ -163,6 +163,8 @@ class RosbridgeWebSocket(WebSocketHandler):
     def on_message(self, message):
         if isinstance(message, bytes):
             message = message.decode("utf-8")
+        # cls = self.__class__
+        # cls.node_handle.get_logger().info(f"on message: {message}")
         self.incoming_queue.push(message)
 
     @log_exceptions
@@ -177,6 +179,8 @@ class RosbridgeWebSocket(WebSocketHandler):
         self.incoming_queue.finish()
 
     def send_message(self, message):
+        # cls = self.__class__
+        # cls.node_handle.get_logger().info(f"send message: {message}")
         if isinstance(message, bson.BSON):
             binary = True
         elif isinstance(message, bytearray):

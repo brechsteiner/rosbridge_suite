@@ -1,0 +1,16 @@
+<launch>
+  <arg name="remote_port" default="9090" />
+  <arg name="remote_address" default="localhost" />
+  <arg name="local_port" default="9091" />
+  <arg name="local_address" default="localhost" />
+
+  <arg name="retry_startup_delay" default="5.0" />
+
+  <node name="rosbridge_gateway" pkg="rosbridge_gateway" exec="rosbridge_gateway" output="screen">
+    <param name="remote_port" value="$(var remote_port)"/>
+    <param name="remote_address" value="$(var remote_address)"/>
+    <param name="local_port" value="$(var local_port)"/>
+    <param name="local_address" value="$(var local_address)"/>
+    <param name="retry_startup_delay" value="$(var retry_startup_delay)"/>
+  </node>
+</launch>
