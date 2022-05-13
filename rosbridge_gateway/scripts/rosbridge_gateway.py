@@ -69,6 +69,7 @@ class RosTopic(Topic):
     def __init__(self, mode="pub", **kw):
         self.peers = {}
         self.mode = mode
+        self.peer_subscribed = False
         super(RosTopic, self).__init__(**kw)
 
     def __eq__(self, other):
@@ -312,9 +313,14 @@ class RosbridgeGatewayNode(Node):
         for server in self.servers.values():
             for topic in server.topics:
                 for peer in topic.peers.values():
-                    if not topic.is_subscribed:
+                    if not peer.peer_subscribed and topic.name in self.servers[peer.ros.id].sub:
                         self.get_logger().info(f"subscribe {topic.name} at peer {peer.ros.id}")
                         topic.subscribe(lambda msg: peer.publish(msg))
+                        peer.peer_subscribed = True
+                    elif peer.peer_subscribed and topic.name not in self.servers[peer.ros.id].sub:
+                        self.get_logger().info(f"unsubscribe {topic.name} at peer {peer.ros.id}")
+                        topic.unsubscribe()
+                        peer.peer_subscribed = False
 
 
 def main(args=None):
