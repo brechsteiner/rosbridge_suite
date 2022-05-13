@@ -245,7 +245,6 @@ class RosbridgeGatewayNode(Node):
 
     def _update_node_details(self, result, server):
         self.get_logger().debug(f"update_node_details {server.id}")
-        self.get_logger().debug(f"update_node_details {result}")
         server.next_pub = list(
             set(server.next_pub).union(set(result["publishing"]) - set(self.sys_topics))
         )
