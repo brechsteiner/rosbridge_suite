@@ -290,10 +290,12 @@ class RosbridgeGatewayNode(Node):
             self.get_logger().info(f"add topic {name} on {server.id}")
             _topic = RosTopic(ros=server, name=name, message_type=type["type"], mode=mode)
             for peer in self.servers.values():
+                _peer = None
                 if server is not peer:
                     _peer = RosTopic(ros=peer, name=name, message_type=type["type"], mode=mode)
                     _peer.advertise()
-                _topic.peers[peer.id] = _peer
+                if _peer is not None
+                    _topic.peers[peer.id] = _peer
             server.topics.append(_topic)
         elif action == "del" and _topics:
             self.get_logger().info(f"del topic {name} on {server.id}")
