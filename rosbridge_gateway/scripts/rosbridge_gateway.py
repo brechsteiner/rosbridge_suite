@@ -294,7 +294,7 @@ class RosbridgeGatewayNode(Node):
                 if server is not peer:
                     _peer = RosTopic(ros=peer, name=name, message_type=type["type"], mode=mode)
                     _peer.advertise()
-                if _peer is not None
+                if _peer is not None:
                     _topic.peers[peer.id] = _peer
             server.topics.append(_topic)
         elif action == "del" and _topics:
